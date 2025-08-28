@@ -268,3 +268,24 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ drive-folder-api listening on :${PORT}`);
 });
+
+// GET /files-in-folder?folderId=xxxxx
+app.get('/files-in-folder', async (req, res) => {
+  try {
+    const { folderId } = req.query;
+    if (!folderId) return res.status(400).json({ error: 'folderId は必須です' });
+
+    const { data } = await drive.files.list({
+      q: `'${folderId}' in parents and trashed=false`,
+      fields: 'files(id,name,mimeType,webViewLink,thumbnailLink,modifiedTime,size)',
+      orderBy: 'modifiedTime desc',
+      pageSize: 50,
+    });
+
+    res.json({ files: data.files || [] });
+  } catch (err) {
+    console.error('files-in-folder error:', err?.response?.data || err);
+    const msg = err?.response?.data?.error?.message || err?.message || 'Google Drive API error';
+    res.status(500).json({ error: msg });
+  }
+});
