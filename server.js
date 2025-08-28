@@ -104,3 +104,88 @@ app.post('/create-folder', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ drive-folder-api listening on :${PORT}`);
 });
+
+
+// ==============================
+// POST /create-case-folders
+// Body: { rootName: string, docTypes?: string[], makePublic?: boolean, parentId?: string }
+// 生成: root / (01_提出物|02_承認済|03_差し戻し) / <各docType>
+// ==============================
+app.post('/create-case-folders', async (req, res) => {
+  try {
+    const { rootName, docTypes = [], makePublic = false, parentId } = req.body || {};
+    if (!rootName || typeof rootName !== 'string') {
+      return res.status(400).json({ error: 'rootName は必須です' });
+    }
+    const safe = (s) => s.replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 200);
+
+    const parents = [];
+    if (parentId && typeof parentId === 'string') parents.push(parentId);
+    else if (process.env.GOOGLE_DRIVE_PARENT_ID) parents.push(process.env.GOOGLE_DRIVE_PARENT_ID);
+
+    const createFolder = async (name, parentsArr) => {
+      const f = await drive.files.create({
+        resource: { name: safe(name), mimeType: 'application/vnd.google-apps.folder', ...(parentsArr?.length ? { parents: parentsArr } : {}) },
+        fields: 'id, name',
+      });
+      const id = f.data.id;
+      const info = await drive.files.get({ fileId: id, fields: 'id, name, webViewLink' });
+      return info.data;
+    };
+
+    const grantPublic = async (fileId) => {
+      await drive.permissions.create({ fileId, requestBody: { role: 'reader', type: 'anyone' } });
+    };
+
+    // 1) ルート
+    const root = await createFolder(rootName, parents);
+
+    // 2) ステータス3フォルダ
+    const statusNames = ['01_提出物', '02_承認済', '03_差し戻し'];
+    const statusCreated = await Promise.all(statusNames.map((n) => createFolder(n, [root.id])));
+    const statusMap = {
+      pending: statusCreated[0],
+      approved: statusCreated[1],
+      rejected: statusCreated[2],
+    };
+
+    // 3) 各ステータス配下に docTypes のサブフォルダ
+    const byStatus = {};
+    for (const s of statusCreated) {
+      const children = await Promise.all(
+        (docTypes || []).map((dt) => createFolder(dt, [s.id]))
+      );
+      byStatus[s.name] = children;
+    }
+
+    // 4) 任意: 公開設定
+    if (makePublic) {
+      const allIds = [
+        root.id,
+        ...statusCreated.map((s) => s.id),
+        ...Object.values(byStatus).flat().map((c) => c.id),
+      ];
+      await Promise.all(allIds.map((id) => grantPublic(id)));
+      // 公開後の最新リンクを取り直す必要は薄いが、厳密にやるなら再取得してもOK
+    }
+
+    // 5) 任意: 空の manifest.csv を作成（ヘッダのみ）
+    // 使う場合はコメント解除
+    // const manifestContent = 'fileId,fileName,docType,status,reason,uploader,reviewer,createdAt,decidedAt,version\n';
+    // await drive.files.create({
+    //   resource: { name: 'manifest.csv', parents: [root.id] },
+    //   media: { mimeType: 'text/csv', body: Readable.from(manifestContent) },
+    //   fields: 'id, name, webViewLink',
+    // });
+
+    return res.json({
+      root,
+      statusFolders: statusMap,
+      docFolders: byStatus, // { "01_提出物": [...], "02_承認済": [...], "03_差し戻し": [...] }
+    });
+  } catch (err) {
+    console.error('create-case-folders error:', err?.response?.data || err);
+    const msg = err?.response?.data?.error?.message || err?.message || 'Google Drive API error';
+    return res.status(500).json({ error: msg });
+  }
+});
