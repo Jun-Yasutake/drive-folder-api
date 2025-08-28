@@ -289,3 +289,34 @@ app.get('/files-in-folder', async (req, res) => {
     res.status(500).json({ error: msg });
   }
 });
+
+// POST /move-file-smart { fileId, destinationFolderId }
+app.post('/move-file-smart', async (req, res) => {
+  try {
+    const { fileId, destinationFolderId } = req.body || {};
+    if (!fileId || !destinationFolderId) {
+      return res.status(400).json({ error: 'fileId と destinationFolderId は必須です' });
+    }
+
+    // 現在の親フォルダを取得
+    const { data: meta } = await drive.files.get({
+      fileId,
+      fields: 'id, name, parents, webViewLink'
+    });
+    const currentParents = meta.parents?.join(',') || '';
+
+    const result = await drive.files.update({
+      fileId,
+      addParents: destinationFolderId,
+      // removeParents はカンマ区切り
+      removeParents: currentParents,
+      fields: 'id, name, parents, webViewLink'
+    });
+
+    res.json({ message: 'ファイル移動成功', file: result.data });
+  } catch (err) {
+    console.error('move-file-smart error:', err?.response?.data || err);
+    const msg = err?.response?.data?.error?.message || err?.message || 'Google Drive API error';
+    res.status(500).json({ error: msg });
+  }
+});
