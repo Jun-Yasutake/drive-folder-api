@@ -2,8 +2,8 @@
 // Google Drive Proxy (Render/Node/Express)
 
 const express = require('express');
-const multer = require('multer');
 const cors = require('cors');
+const multer = require('multer');
 const { google } = require('googleapis');
 const { Readable } = require('stream');
 const jwt = require('jsonwebtoken');
@@ -12,40 +12,49 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
-// ---- CORS -------------------------------------------------
+// ==========================================================
+// CORS （デバッグログ & OPTIONS も対応）
+// ==========================================================
 const allowAll = !process.env.CORS_ORIGINS;
 const whitelist = allowAll
   ? []
   : process.env.CORS_ORIGINS.split(',').map(s => s.trim()).filter(Boolean);
 
-app.use(
-  cors({
-    origin: allowAll
-      ? true
-      : function (origin, cb) {
-          // origin が null（curl など）の場合は許可
-          if (!origin) return cb(null, true);
-          const ok = whitelist.some(w => {
-            if (w.includes('*')) {
-              const re = new RegExp('^' + w.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$');
-              return re.test(origin);
-            }
-            return origin === w;
-          });
-          cb(null, ok);
-        },
-    credentials: false,
-  })
-);
+const corsOptions = {
+  origin(origin, cb) {
+    // 直アクセス（curl等）で Origin が無いとき/allowAll のときは許可
+    if (!origin || allowAll) return cb(null, true);
 
-// ---- Multer (memory) -------------------------------------
-// 任意で 10MB 制限
+    const ok = whitelist.some(w => {
+      if (w.includes('*')) {
+        const re = new RegExp('^' + w.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$');
+        return re.test(origin);
+      }
+      return origin === w;
+    });
+
+    console.log('[CORS]', origin, '->', ok ? 'ALLOW' : 'BLOCK');
+    cb(null, ok);
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false,
+  optionsSuccessStatus: 204,
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
+// ==========================================================
+// Multer（10MB制限）
+// ==========================================================
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
-// ---- Google Auth / Drive ---------------------------------
+// ==========================================================
+// Google OAuth / Drive
+// ==========================================================
 const oauth2Client = new google.auth.OAuth2(
   process.env.CLIENT_ID,
   process.env.CLIENT_SECRET,
@@ -54,7 +63,9 @@ const oauth2Client = new google.auth.OAuth2(
 oauth2Client.setCredentials({ refresh_token: process.env.REFRESH_TOKEN });
 const drive = google.drive({ version: 'v3', auth: oauth2Client });
 
-// ---- Helpers ---------------------------------------------
+// ==========================================================
+// Helpers
+// ==========================================================
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
 const sanitize = (s) =>
@@ -93,8 +104,13 @@ async function listChildFolders(parentId) {
   return data.files || [];
 }
 
-// ---- JWT utils for Debtor Portal -------------------------
+// ==========================================================
+// JWT utils for Debtor Portal
+// ==========================================================
 function signPortalToken(payload, expiresIn = '30d') {
+  if (!process.env.PORTAL_JWT_SECRET) {
+    throw new Error('PORTAL_JWT_SECRET is required');
+  }
   return jwt.sign(payload, process.env.PORTAL_JWT_SECRET, { expiresIn });
 }
 function verifyPortalToken(token) {
@@ -114,7 +130,9 @@ function requireDebtor(req, res, next) {
   }
 }
 
-// ---- Health ----------------------------------------------
+// ==========================================================
+// Health
+// ==========================================================
 app.get('/', (_, res) => {
   res.json({ ok: true, service: 'drive-folder-api', ts: new Date().toISOString() });
 });
@@ -188,7 +206,7 @@ app.post('/create-case-folders', async (req, res) => {
 });
 
 // ==========================================================
-// 2) 構成の再取得（ブラウザ更新後に docType→folderId を復元）
+// 2) 構成の再取得（docType→folderId 復元）
 // GET /case-structure?rootId=xxxx
 // ==========================================================
 app.get('/case-structure', async (req, res) => {
@@ -213,9 +231,9 @@ app.get('/case-structure', async (req, res) => {
 });
 
 // ==========================================================
-// 3) アップロード（汎用／審査者UIからも利用）
+// 3) アップロード（汎用）
 // POST /upload-to-folder (multipart: file, folderId, [namePrefix?])
-// 保存先は 01_提出物/{docType} を指定して送る
+// 保存先は 01_提出物/{docType} を指定
 // ==========================================================
 app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
   try {
@@ -227,12 +245,9 @@ app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
     const safeOriginal = sanitize(req.file.originalname);
     const finalName = namePrefix ? `${sanitize(namePrefix)}_${now}_${safeOriginal}` : safeOriginal;
 
-    const fileMetadata = { name: finalName, parents: [folderId] };
-    const media = { mimeType: req.file.mimetype, body: Readable.from(req.file.buffer) };
-
     const response = await drive.files.create({
-      resource: fileMetadata,
-      media,
+      resource: { name: finalName, parents: [folderId] },
+      media: { mimeType: req.file.mimetype, body: Readable.from(req.file.buffer) },
       fields: 'id,name,webViewLink,parents',
     });
 
@@ -245,7 +260,7 @@ app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
 });
 
 // ==========================================================
-// 4) ファイル一覧（フォルダ内）
+// 4) フォルダ内ファイル一覧
 // GET /files-in-folder?folderId=xxxxx
 // ==========================================================
 app.get('/files-in-folder', async (req, res) => {
@@ -326,7 +341,7 @@ app.post('/move-file-smart', async (req, res) => {
 });
 
 // ==========================================================
-// 7) コメント付与（任意：差し戻し理由の記録など）
+// 7) コメント付与（任意：差し戻し理由等）
 // POST /comment { fileId, message }
 // ==========================================================
 app.post('/comment', async (req, res) => {
@@ -334,7 +349,7 @@ app.post('/comment', async (req, res) => {
     const { fileId, message } = req.body || {};
     if (!fileId || !message) return res.status(400).json({ error: 'fileId と message は必須です' });
 
-    // Drive v3 ではコメントAPIが直接ないため、description 更新で代替
+    // Drive v3 にはコメントAPIが無いので description 更新で代替
     const { data } = await drive.files.update({
       fileId,
       resource: { description: message },
@@ -349,7 +364,7 @@ app.post('/comment', async (req, res) => {
 });
 
 // ==========================================================
-// 8) 審査者が使う「債務者URL発行」
+// 8) 審査者：債務者URL発行
 // POST /issue-portal-link { rootId, debtorName, docTypes }
 // ==========================================================
 app.post('/issue-portal-link', async (req, res) => {
@@ -358,6 +373,7 @@ app.post('/issue-portal-link', async (req, res) => {
     if (!rootId || !debtorName) return res.status(400).json({ error: 'rootId, debtorName は必須です' });
     const token = signPortalToken({ rootId, debtorName, docTypes, role: 'debtor' }, '30d');
     const base = (process.env.PORTAL_URL_BASE || '').replace(/\/+$/, '');
+    if (!base) return res.status(500).json({ error: 'PORTAL_URL_BASE が未設定です' });
     const url = `${base}?token=${encodeURIComponent(token)}`;
     res.json({ url, token, expiresIn: '30d' });
   } catch (e) {
@@ -434,7 +450,9 @@ app.get('/portal/files', requireDebtor, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message || 'portal files failed' }); }
 });
 
-// ---- Server start ----------------------------------------
+// ==========================================================
+// Server start
+// ==========================================================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ drive-folder-api listening on :${PORT}`);
