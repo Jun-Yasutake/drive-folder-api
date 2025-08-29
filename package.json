@@ -1,7 +1,6 @@
 {
   "name": "drive-folder-api",
-  "version": "1.0.1",
-  "description": "Google Drive folder creator API for Render",
+  "version": "1.0.2",
   "main": "src/server.js",
   "type": "commonjs",
   "scripts": {
@@ -14,6 +13,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "googleapis": "^131.0.0",
+    "jsonwebtoken": "^9.0.2",            
     "multer": "1.4.5-lts.1"
   },
   "devDependencies": {
