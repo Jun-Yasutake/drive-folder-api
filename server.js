@@ -454,6 +454,91 @@ app.get('/portal/files', requireDebtor, async (req, res) => {
 // Server start
 // ==========================================================
 const PORT = process.env.PORT || 3000;
+
+app.get('/healthz', (req, res) => {
+  res.type('text/plain').send('ok');
+});
+
 app.listen(PORT, () => {
   console.log(`✅ drive-folder-api listening on :${PORT}`);
+});
+
+// 審査者 or 債務者（preview/list 権限）の簡易認可
+function reviewerOrDebtor(req, res, next) {
+  const m = (req.headers.authorization || '').match(/^Bearer (.+)$/);
+  if (!m) return res.status(401).json({ error: 'missing token' });
+  try {
+    const p = jwt.verify(m[1], process.env.JWT_SECRET);
+    // 審査者は許可
+    if (p.role === 'reviewer') { req.reviewer = p; return next(); }
+    // 債務者は scope と rootId を要求
+    if (p.role === 'debtor') {
+      const sc = Array.isArray(p.scope) ? p.scope : [];
+      if (!sc.includes('preview') && !sc.includes('list')) {
+        return res.status(403).json({ error: 'forbidden: scope' });
+      }
+      req.portal = p; // { rootId など }
+      return next();
+    }
+    return res.status(403).json({ error: 'forbidden' });
+  } catch {
+    return res.status(401).json({ error: 'invalid token' });
+  }
+}
+
+// 指定 fileId が JWT の rootId 配下か（最大10階層）ゆるく確認
+async function belongsToRoot(drive, fileId, allowedRootId) {
+  if (!allowedRootId) return true; // 審査者はスキップ可
+  let cur = fileId;
+  for (let i = 0; i < 10; i++) {
+    const meta = await drive.files.get({ fileId: cur, fields: 'id,parents' });
+    const parents = meta.data.parents || [];
+    if (parents.includes(allowedRootId)) return true;
+    if (!parents.length) break;
+    cur = parents[0];
+  }
+  return false;
+}
+
+// --- プレビュー本体 ---
+app.get('/files/preview/:fileId', reviewerOrDebtor, async (req, res) => {
+  try {
+    const { fileId } = req.params;
+    const allowedRootId = req.portal?.rootId || req.portal?.debtorFolderId;
+
+    if (allowedRootId) {
+      const ok = await belongsToRoot(drive, fileId, allowedRootId);
+      if (!ok) return res.status(403).json({ error: 'forbidden: outside of case root' });
+    }
+
+    // メタ情報
+    const meta = await drive.files.get({
+      fileId,
+      fields: 'mimeType,name,size,md5Checksum'
+    });
+    const mime = meta.data.mimeType || 'application/octet-stream';
+    const name = meta.data.name || 'file';
+    const size = Number(meta.data.size || 0);
+    const max  = Number(process.env.PREVIEW_MAX_BYTES || 0);
+    if (max > 0 && size > max) {
+      return res.status(413).json({ error: 'file too large for preview' });
+    }
+
+    // Drive からストリーム
+    const gRes = await drive.files.get(
+      { fileId, alt: 'media' },
+      { responseType: 'stream' }
+    );
+
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(name)}`);
+    res.setHeader('Cache-Control', 'private, max-age=600');
+    if (meta.data.md5Checksum) res.setHeader('ETag', meta.data.md5Checksum);
+
+    gRes.data.on('error', () => res.destroy());
+    gRes.data.pipe(res);
+  } catch (e) {
+    const code = e?.code || e?.response?.status || 500;
+    res.status(code === 404 ? 404 : 502).json({ error: 'preview failed' });
+  }
 });
