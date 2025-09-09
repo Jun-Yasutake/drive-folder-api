@@ -95,6 +95,15 @@ async function grantPublic(fileId) {
   });
 }
 
+// 公開ファイル用の便利リンク
+function buildPublicLinks(fileId) {
+  return {
+    previewUrl:  `https://drive.google.com/file/${fileId}/preview`,
+    webViewLink: `https://drive.google.com/file/${fileId}/view`,
+    downloadUrl: `https://drive.google.com/uc?export=download&id=${fileId}`,
+  };
+}
+
 async function listChildFolders(parentId) {
   const { data } = await drive.files.list({
     q: `'${parentId}' in parents and mimeType='${FOLDER_MIME}' and trashed=false`,
@@ -173,7 +182,7 @@ app.post('/create-case-folders', async (req, res) => {
       byStatus[s.name] = children; // array of {id,name,webViewLink}
     }
 
-    // optional: public
+    // optional: public（create-case-folders 時はオプションのまま）
     if (makePublic) {
       const allIds = [
         root.id,
@@ -234,6 +243,7 @@ app.get('/case-structure', async (req, res) => {
 // 3) アップロード（汎用）
 // POST /upload-to-folder (multipart: file, folderId, [namePrefix?])
 // 保存先は 01_提出物/{docType} を指定
+// ＊この環境では「アップロード直後に必ず公開（anyone）」にします
 // ==========================================================
 app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
   try {
@@ -251,7 +261,15 @@ app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
       fields: 'id,name,webViewLink,parents',
     });
 
-    res.json({ message: '指定フォルダへのアップロード成功', file: response.data });
+    // 公開（リンクを知っている全員）
+    const fileId = response.data.id;
+    await grantPublic(fileId);
+    const links = buildPublicLinks(fileId);
+
+    res.json({
+      message: '指定フォルダへのアップロード成功（公開化済み）',
+      file: { ...response.data, isPublic: true, ...links },
+    });
   } catch (err) {
     console.error('upload-to-folder error:', err?.response?.data || err);
     const msg = err?.response?.data?.error?.message || err?.message || 'Google Drive API error';
@@ -384,6 +402,7 @@ app.post('/issue-portal-link', async (req, res) => {
 // ==========================================================
 // 9) 債務者ポータル API
 // GET /portal/info, GET /portal/structure, POST /portal/upload, GET /portal/files
+// （この環境ではアップロード直後に公開化）
 // ==========================================================
 app.get('/portal/info', requireDebtor, (req, res) => {
   const { debtorName, docTypes, rootId, exp } = req.portal;
@@ -425,7 +444,16 @@ app.post('/portal/upload', requireDebtor, upload.single('file'), async (req, res
       media: { mimeType: req.file.mimetype, body: Readable.from(req.file.buffer) },
       fields: 'id,name,webViewLink,parents'
     });
-    res.json({ message: 'アップロード成功', file: response.data });
+
+    // 公開（リンクを知っている全員）
+    const fileId = response.data.id;
+    await grantPublic(fileId);
+    const links = buildPublicLinks(fileId);
+
+    res.json({
+      message: 'アップロード成功（公開化済み）',
+      file: { ...response.data, isPublic: true, ...links }
+    });
   } catch (e) { res.status(500).json({ error: e.message || 'portal upload failed' }); }
 });
 
@@ -451,19 +479,8 @@ app.get('/portal/files', requireDebtor, async (req, res) => {
 });
 
 // ==========================================================
-// Server start
-// ==========================================================
-const PORT = process.env.PORT || 3000;
-
-app.get('/healthz', (req, res) => {
-  res.type('text/plain').send('ok');
-});
-
-app.listen(PORT, () => {
-  console.log(`✅ drive-folder-api listening on :${PORT}`);
-});
-
 // 審査者 or 債務者（preview/list 権限）の簡易認可
+// ==========================================================
 function reviewerOrDebtor(req, res, next) {
   const m = (req.headers.authorization || '').match(/^Bearer (.+)$/);
   if (!m) return res.status(401).json({ error: 'missing token' });
@@ -487,11 +504,11 @@ function reviewerOrDebtor(req, res, next) {
 }
 
 // 指定 fileId が JWT の rootId 配下か（最大10階層）ゆるく確認
-async function belongsToRoot(drive, fileId, allowedRootId) {
+async function belongsToRoot(driveClient, fileId, allowedRootId) {
   if (!allowedRootId) return true; // 審査者はスキップ可
   let cur = fileId;
   for (let i = 0; i < 10; i++) {
-    const meta = await drive.files.get({ fileId: cur, fields: 'id,parents' });
+    const meta = await driveClient.files.get({ fileId: cur, fields: 'id,parents' });
     const parents = meta.data.parents || [];
     if (parents.includes(allowedRootId)) return true;
     if (!parents.length) break;
@@ -541,4 +558,17 @@ app.get('/files/preview/:fileId', reviewerOrDebtor, async (req, res) => {
     const code = e?.code || e?.response?.status || 500;
     res.status(code === 404 ? 404 : 502).json({ error: 'preview failed' });
   }
+});
+
+// ==========================================================
+// Server start
+// ==========================================================
+const PORT = process.env.PORT || 3000;
+
+app.get('/healthz', (req, res) => {
+  res.type('text/plain').send('ok');
+});
+
+app.listen(PORT, () => {
+  console.log(`✅ drive-folder-api listening on :${PORT}`);
 });
