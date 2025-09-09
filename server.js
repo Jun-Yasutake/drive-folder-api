@@ -95,11 +95,23 @@ async function grantPublic(fileId) {
   });
 }
 
-// 公開ファイル用の便利リンク
-function buildPublicLinks(fileId) {
+// ---- Drive link helpers ----
+function toViewUrl(id, webViewLink) {
+  // webViewLink があれば優先。/file/d/ が無い場合は補正し、/preview を /view に統一
+  if (webViewLink) {
+    let v = webViewLink.replace(/\/preview(\?.*)?$/, '/view');
+    if (!/\/file\/d\//.test(v)) v = v.replace('/file/', '/file/d/');
+    return v;
+  }
+  return `https://drive.google.com/file/d/${id}/view`;
+}
+function toPreviewUrl(id, webViewLink) {
+  return toViewUrl(id, webViewLink).replace(/\/view(\?.*)?$/, '/preview');
+}
+function buildPublicLinks(fileId, webViewLink) {
   return {
-    previewUrl:  `https://drive.google.com/file/${fileId}/preview`,
-    webViewLink: `https://drive.google.com/file/${fileId}/view`,
+    viewUrl: toViewUrl(fileId, webViewLink),
+    previewUrl: toPreviewUrl(fileId, webViewLink),
     downloadUrl: `https://drive.google.com/uc?export=download&id=${fileId}`,
   };
 }
@@ -264,7 +276,7 @@ app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
     // 公開（リンクを知っている全員）
     const fileId = response.data.id;
     await grantPublic(fileId);
-    const links = buildPublicLinks(fileId);
+    const links = buildPublicLinks(fileId, response.data.webViewLink);
 
     res.json({
       message: '指定フォルダへのアップロード成功（公開化済み）',
@@ -293,7 +305,14 @@ app.get('/files-in-folder', async (req, res) => {
       pageSize: 50,
     });
 
-    res.json({ files: data.files || [] });
+    const files = (data.files || []).map(f => ({
+      ...f,
+      viewUrl: toViewUrl(f.id, f.webViewLink),
+      previewUrl: toPreviewUrl(f.id, f.webViewLink),
+      downloadUrl: `https://drive.google.com/uc?export=download&id=${f.id}`,
+    }));
+
+    res.json({ files });
   } catch (err) {
     console.error('files-in-folder error:', err?.response?.data || err);
     const msg = err?.response?.data?.error?.message || err?.message || 'Google Drive API error';
@@ -376,7 +395,7 @@ app.post('/comment', async (req, res) => {
     res.json({ message: 'コメント登録（description更新）', file: data });
   } catch (err) {
     console.error('comment error:', err?.response?.data || err);
-    const msg = err?.response?.data?.error?.message || err?.message || 'Google Drive API error';
+  const msg = err?.response?.data?.error?.message || err?.message || 'Google Drive API error';
     res.status(500).json({ error: msg });
   }
 });
@@ -448,7 +467,7 @@ app.post('/portal/upload', requireDebtor, upload.single('file'), async (req, res
     // 公開（リンクを知っている全員）
     const fileId = response.data.id;
     await grantPublic(fileId);
-    const links = buildPublicLinks(fileId);
+    const links = buildPublicLinks(fileId, response.data.webViewLink);
 
     res.json({
       message: 'アップロード成功（公開化済み）',
@@ -474,7 +493,15 @@ app.get('/portal/files', requireDebtor, async (req, res) => {
       orderBy: 'modifiedTime desc',
       pageSize: 50
     });
-    res.json({ files: data.files || [] });
+
+    const files = (data.files || []).map(f => ({
+      ...f,
+      viewUrl: toViewUrl(f.id, f.webViewLink),
+      previewUrl: toPreviewUrl(f.id, f.webViewLink),
+      downloadUrl: `https://drive.google.com/uc?export=download&id=${f.id}`,
+    }));
+
+    res.json({ files });
   } catch (e) { res.status(500).json({ error: e.message || 'portal files failed' }); }
 });
 
@@ -535,7 +562,7 @@ app.get('/files/preview/:fileId', reviewerOrDebtor, async (req, res) => {
     });
     const mime = meta.data.mimeType || 'application/octet-stream';
     const name = meta.data.name || 'file';
-    const size = Number(meta.data.size || 0);
+       const size = Number(meta.data.size || 0);
     const max  = Number(process.env.PREVIEW_MAX_BYTES || 0);
     if (max > 0 && size > max) {
       return res.status(413).json({ error: 'file too large for preview' });
