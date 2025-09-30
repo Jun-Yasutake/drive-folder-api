@@ -264,7 +264,7 @@ app.post('/upload-to-folder', upload.single('file'), async (req, res) => {
     if (!folderId) return res.status(400).json({ error: 'folderId が必要です' });
 
     const now = new Date().toISOString().replace(/[:-]/g, '').slice(0, 15); // YYYYMMDDTHHMMSS
-    const safeOriginal = sanitize(req.file.originalname);
+    const safeOriginal = sanitize(Buffer.from(req.file.originalname, 'latin1').toString('utf8'));
     const finalName = namePrefix ? `${sanitize(namePrefix)}_${now}_${safeOriginal}` : safeOriginal;
 
     const response = await drive.files.create({
@@ -455,7 +455,7 @@ app.post('/portal/upload', requireDebtor, upload.single('file'), async (req, res
     if (!folder) return res.status(400).json({ error: `docType フォルダがありません: ${docType}` });
 
     const stamp = new Date().toISOString().replace(/[:-]/g,'').slice(0,15);
-    const safeName = sanitize(req.file.originalname);
+    const safeName = sanitize(Buffer.from(req.file.originalname, 'latin1').toString('utf8'));
     const finalName = `${docType}_${stamp}_${safeName}`;
 
     const response = await drive.files.create({
