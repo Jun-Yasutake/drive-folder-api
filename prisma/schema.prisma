@@ -1,0 +1,36 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Case {
+  id         BigInt   @id @default(autoincrement())
+  debtorName String?
+  status     String   @default("open")
+  createdAt  DateTime @default(now())
+  publicLink CasePublicLink?
+  documents  CaseDocument[]
+}
+
+model CasePublicLink {
+  id        BigInt   @id @default(autoincrement())
+  case      Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId    BigInt   @unique
+  publicId  String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model CaseDocument {
+  id          BigInt   @id @default(autoincrement())
+  case        Case     @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  caseId      BigInt
+  docType     String
+  status      String
+  submittedAt DateTime?
+  @@index([caseId])
+}

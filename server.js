@@ -599,3 +599,112 @@ app.get('/healthz', (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ drive-folder-api listening on :${PORT}`);
 });
+
+// 例: src/index.js
+const express = require('express');
+const cors = require('cors');
+const { customAlphabet } = require('nanoid');
+const { prisma } = require('./lib/prisma');
+
+const app = express();
+
+// JSONボディ
+app.use(express.json());
+
+// CORS（環境変数 CORS_ORIGINS にカンマ区切りで列挙）
+const allowList = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin: allowList.length ? allowList : '*',
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  })
+);
+
+// 共有URLのベース（HashRouterなら /#/portal を含める）
+const PORTAL_URL_BASE =
+  process.env.PORTAL_URL_BASE || 'http://localhost:5173/#/portal';
+
+// ランダム公開ID（十分長い21桁）
+const nanoid = customAlphabet(
+  '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz',
+  21
+);
+
+/**
+ * POST /api/cases
+ * 案件を作成し、公開ID/URLを返す
+ * body: { debtorName?: string }
+ */
+app.post('/api/cases', async (req, res) => {
+  try {
+    const debtorName = req.body && typeof req.body.debtorName === 'string'
+      ? req.body.debtorName
+      : null;
+
+    const result = await prisma.$transaction(async (tx) => {
+      const c = await tx.case.create({ data: { debtorName } });
+      const publicId = nanoid();
+      await tx.casePublicLink.create({
+        data: { caseId: c.id, publicId }
+      });
+      return { caseId: c.id, publicId };
+    });
+
+    const publicUrl = `${PORTAL_URL_BASE}/cases/${result.publicId}`;
+    res.json({ caseId: String(result.caseId), publicUrl });
+  } catch (err) {
+    console.error('POST /api/cases error:', err);
+    res.status(500).json({ message: 'failed to create case' });
+  }
+});
+
+/**
+ * GET /api/public/cases/:publicId
+ * 公開IDから案件の公開用データを返す
+ */
+app.get('/api/public/cases/:publicId', async (req, res) => {
+  try {
+    const { publicId } = req.params;
+
+    const link = await prisma.casePublicLink.findUnique({
+      where: { publicId },
+      include: { case: { include: { documents: true } } }
+    });
+
+    if (!link || !link.isActive) {
+      return res.status(404).json({ message: 'not found' });
+    }
+
+    const c = link.case;
+    res.json({
+      case: {
+        debtorName: c.debtorName,
+        status: c.status,
+        createdAt: c.createdAt
+      },
+      documents: c.documents.map(d => ({
+        id: String(d.id),
+        docType: d.docType,
+        status: d.status,
+        submittedAt: d.submittedAt
+      }))
+    });
+  } catch (err) {
+    console.error('GET /api/public/cases/:publicId error:', err);
+    res.status(500).json({ message: 'failed to fetch public case' });
+  }
+});
+
+// 既存の app.listen(...) はそのまま利用
+// もし無ければ↓を有効化
+// const PORT = process.env.PORT || 3000;
+// app.listen(PORT, () => {
+//   console.log(`server running on :${PORT}`);
+// });
+
+module.exports = app; // RenderのAuto–Server-Startで不要なら省略可
