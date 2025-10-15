@@ -601,7 +601,7 @@ app.listen(PORT, () => {
 });
 
 // 例: src/index.js
-const express = require('express');
+
 const cors = require('cors');
 const { customAlphabet } = require('nanoid');
 const { prisma } = require('./lib/prisma');
