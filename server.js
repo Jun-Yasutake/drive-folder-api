@@ -604,8 +604,6 @@ app.listen(PORT, () => {
 const { customAlphabet } = require('nanoid');
 const { prisma } = require('./lib/prisma');
 
-const app = express();
-
 // JSONボディ
 app.use(express.json());
 
